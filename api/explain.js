@@ -90,7 +90,8 @@ export default async function handler(req, res) {
     if (!apiKey) {
       res.status(500).json({
         ok: false,
-        error: "GROQ_API_KEY is not configured on the server. Add it in Vercel Project Settings → Environment Variables, then redeploy.",
+        error:
+          "GROQ_API_KEY is not configured on the server. Add it in Vercel Project Settings → Environment Variables, then redeploy.",
       });
       return;
     }
@@ -136,10 +137,10 @@ export default async function handler(req, res) {
       userParts.push({ type: "image_url", image_url: { url } });
     }
 
+    // Current Groq models (Llama 3.3 / Llama 4 Scout were deprecated Aug 2026)
+    // qwen/qwen3.6-27b supports vision; openai/gpt-oss-120b is strong for text
     const model =
-      images.length > 0
-        ? "meta-llama/llama-4-scout-17b-16e-instruct"
-        : "llama-3.3-70b-versatile";
+      images.length > 0 ? "qwen/qwen3.6-27b" : "openai/gpt-oss-120b";
 
     const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -178,7 +179,10 @@ export default async function handler(req, res) {
     const groqBody = await groqRes.json();
     const content = groqBody?.choices?.[0]?.message?.content || "";
     if (!content) {
-      res.status(502).json({ ok: false, error: "Empty response from the tutor. Try again." });
+      res.status(502).json({
+        ok: false,
+        error: "Empty response from the tutor. Try again.",
+      });
       return;
     }
 
