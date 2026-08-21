@@ -18,7 +18,7 @@ const SCHEMA_HINT = `{
 function extractJson(raw) {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = (fenced && fenced[1] ? fenced[1].trim() : trimmed);
+  const candidate = fenced?.[1]?.trim() ?? trimmed;
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) {
@@ -75,76 +75,126 @@ function parseResult(raw) {
   };
 }
 
-module.exports = async function handler(req, res) {
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({ ok: false, error: "Method not allowed" });
-    return;
-  }
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ ok: false, error: "GROQ_API_KEY is not configured on the server." });
-    return;
-  }
-  const body = req.body || {};
-  const text = typeof body.text === "string" ? body.text.slice(0, 12000) : "";
-  const subject = typeof body.subject === "string" ? body.subject.slice(0, 80) : "";
-  const images = Array.isArray(body.images)
-    ? body.images.filter((item) => typeof item === "string").slice(0, 3)
-    : [];
-  if (!text.trim() && images.length === 0) {
-    res.status(400).json({ ok: false, error: "Add some notes or a photo first." });
-    return;
-  }
-  const userParts = [{
-    type: "text",
-    text: [
-      subject ? `Class / subject hint: ${subject}` : "",
-      text.trim() ? `Student notes:\n${text.trim()}` : "The student uploaded photos of a textbook or notes. Read the text in the images.",
-      "Explain this in the simplest honest way, then write practice questions grounded only in this material.",
-      `Return ONLY JSON matching:\n${SCHEMA_HINT}`,
-      "Write 6 to 8 questions. Exactly 4 choices each. correctIndex is 0-3.",
-    ].filter(Boolean).join("\n\n"),
-  }];
-  for (const url of images) {
-    userParts.push({ type: "image_url", image_url: { url } });
-  }
-  const model = images.length > 0 ? "meta-llama/llama-4-scout-17b-16e-instruct" : "llama-3.3-70b-versatile";
+export default async function handler(req, res) {
   try {
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Method not allowed" });
+      return;
+    }
+
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({
+        ok: false,
+        error: "GROQ_API_KEY is not configured on the server. Add it in Vercel Project Settings → Environment Variables, then redeploy.",
+      });
+      return;
+    }
+
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = {};
+      }
+    }
+    body = body || {};
+
+    const text = typeof body.text === "string" ? body.text.slice(0, 12000) : "";
+    const subject = typeof body.subject === "string" ? body.subject.slice(0, 80) : "";
+    const images = Array.isArray(body.images)
+      ? body.images.filter((item) => typeof item === "string").slice(0, 3)
+      : [];
+
+    if (!text.trim() && images.length === 0) {
+      res.status(400).json({ ok: false, error: "Add some notes or a photo first." });
+      return;
+    }
+
+    const userParts = [
+      {
+        type: "text",
+        text: [
+          subject ? `Class / subject hint: ${subject}` : "",
+          text.trim()
+            ? `Student notes:\n${text.trim()}`
+            : "The student uploaded photos of a textbook or notes. Read the text in the images.",
+          "Explain this in the simplest honest way, then write practice questions grounded only in this material.",
+          `Return ONLY JSON matching:\n${SCHEMA_HINT}`,
+          "Write 6 to 8 questions. Exactly 4 choices each. correctIndex is 0-3.",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      },
+    ];
+    for (const url of images) {
+      userParts.push({ type: "image_url", image_url: { url } });
+    }
+
+    const model =
+      images.length > 0
+        ? "meta-llama/llama-4-scout-17b-16e-instruct"
+        : "llama-3.3-70b-versatile";
+
     const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
       body: JSON.stringify({
-        model, temperature: 0.35, max_tokens: 2800,
+        model,
+        temperature: 0.35,
+        max_tokens: 2800,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "You are a patient tutor. You explain like a sharp friend, never a textbook. Short sentences. Everyday words. No emoji. No filler. Ground quizzes only in the provided notes. Always respond with valid JSON only." },
+          {
+            role: "system",
+            content:
+              "You are a patient tutor. You explain like a sharp friend, never a textbook. Short sentences. Everyday words. No emoji. No filler. Ground quizzes only in the provided notes. Always respond with valid JSON only.",
+          },
           { role: "user", content: userParts },
         ],
       }),
     });
+
     if (!groqRes.ok) {
       let detail = `Groq API error ${groqRes.status}`;
-      try { const errBody = await groqRes.json(); if (errBody.error && errBody.error.message) detail = errBody.error.message; } catch {}
+      try {
+        const errBody = await groqRes.json();
+        if (errBody?.error?.message) detail = errBody.error.message;
+      } catch {
+        /* keep status text */
+      }
       res.status(502).json({ ok: false, error: detail });
       return;
     }
+
     const groqBody = await groqRes.json();
-    const content = (groqBody.choices && groqBody.choices[0] && groqBody.choices[0].message && groqBody.choices[0].message.content) || "";
+    const content = groqBody?.choices?.[0]?.message?.content || "";
     if (!content) {
       res.status(502).json({ ok: false, error: "Empty response from the tutor. Try again." });
       return;
     }
+
     try {
       const parsed = parseResult(extractJson(content));
       res.status(200).json({ ok: true, result: parsed });
     } catch (err) {
-      res.status(502).json({ ok: false, error: err instanceof Error ? err.message : "Could not read the lesson." });
+      res.status(502).json({
+        ok: false,
+        error: err instanceof Error ? err.message : "Could not read the lesson.",
+      });
     }
   } catch (err) {
-    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Upstream request failed." });
+    res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : "Upstream request failed.",
+    });
   }
-};
+}
